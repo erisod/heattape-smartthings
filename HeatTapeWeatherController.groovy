@@ -1,8 +1,8 @@
 /**
- *  Heat Tape Weather Controller v0.1
+ *  Heat Tape Weather Controller v0.2
  *
  *  Copyright 2015 Eric Mayers
- *  This is a major re-write based somewhat on erobertshaw's V2.1 Smart Heat Tape controller.
+ *  This is a major re-write of erobertshaw's V2.1 Smart Heat Tape controller.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
@@ -20,10 +20,10 @@ definition(
     author: "Eric Mayers",
     description: "Based on weather data, this Smart App tracks snowfall and controls a set of heat-tape attached switches.",
     category: "Green Living",
-    iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
-    iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
-    iconX3Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png") {
-    appSetting "zipcode"
+    iconUrl: "http://cdn.device-icons.smartthings.com/Weather/weather6-icn.png",
+    iconX2Url: "http://cdn.device-icons.smartthings.com/Weather/weather6-icn@2x.png",
+    iconX3Url: "http://cdn.device-icons.smartthings.com/Weather/weather6-icn@2x.png") {
+    appSetting "zipcode", "heattape"
 }
 
 
