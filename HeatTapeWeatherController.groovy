@@ -1,5 +1,5 @@
 /**
- *  Heat Tape Weather Controller v0.3
+ *  Heat Tape Weather Controller v0.4
  *
  *  Copyright 2015 Eric Mayers
  *  This is a major re-write of erobertshaw's V2.1 Smart Heat Tape controller.
@@ -18,12 +18,14 @@ definition(
     name: "Heat Tape Weather Controller",
     namespace: "erisod",
     author: "Eric Mayers",
-    description: "Based on weather data, this Smart App tracks snowfall and controls a set of heat-tape attached switches.",
+    description: "Using weather data, this SmartApp controls heattape switches.  " + 
+      "Tested with Aeon Labs DSC06106-ZWUS switches.",
     category: "Green Living",
     iconUrl: "http://cdn.device-icons.smartthings.com/Weather/weather6-icn.png",
     iconX2Url: "http://cdn.device-icons.smartthings.com/Weather/weather6-icn@2x.png",
     iconX3Url: "http://cdn.device-icons.smartthings.com/Weather/weather6-icn@2x.png") {
-    appSetting "zipcode", "heattape"
+    appSetting "zipcode"
+    appSetting "heattape"
 }
 
 
@@ -55,31 +57,40 @@ def setupPage()
 {
   setupInitialConditions()
 
-  return dynamicPage(name: "setupPage", title: "Device Setup", nextPage:"setupTempPage", uninstall:false, install:false) {
+  return dynamicPage(name: "setupPage", title: "Device Setup", nextPage:"setupTempPage", 
+                     uninstall:false, install:false) {
     section("Device & Location Setup") {
       input "heattape", "capability.switch", title: "Heat tape switches", required: true, multiple: true
-      input "zipcode", "text", title: "Zipcode or weatherstation code (pws:code)", required: true
+      input "zipcode", "text", title: "Zipcode or Wunderground weatherstation code (e.g. pws:code)", 
+        required: true
     }
 
     // If we have configured devices, show the current state of them.
     if (heattape != null) {
-      section("Heat Tape is : " + getHeattapeState() + " (" + getHeattapePower() + "W)", hidden:false, hideable:true) {
+      section("Current Status") {
+        def status = ""
+        status = 
+          "Current Temp: " + getTemp() + "c\n" + 
+          "Calculated Snow Depth: " + getSnowDepth() + "mm\n" + 
+          "Heat Tape: " + getHeattapeState() + " @" + getHeattapePower() + "W\n"
         heattape.each {
-          paragraph("Unit : " + it.displayName + " : " + it.currentValue("switch"))
+          status += "   " + it.displayName + " : " + it.currentValue("switch") + "\n"
         }
+        paragraph status
       }
     }
-    
+
     // If we have temperature and snowfall history, display it, and tracked depth.
     if (state.history.size() > 0) {
-      section("Temperature/Snowfall history", hidden:false, hideable:true) {
-        paragraph "Calculated Snow Depth " + getSnowDepth() + "mm"
+      section("Hourly History", hidden:false, hideable:true) {
+        def history = ""
         state.history.each {
           log.debug "history element : " + it 
         
           def displayDate = new Date(it.ts).format("yyyy-MM-dd h:mm a", location.timeZone)
-          paragraph displayDate + " : " + it.snow_mm + "mm " + it.temp_c + "c " + it.power + "W "
+          history += displayDate + " : " + it.snow_mm + "mm " + it.temp_c + "c " + it.power + "W\n"
         }
+        paragraph history
       }
     }  
   }
@@ -90,25 +101,27 @@ def setupTempPage()
 {
   return dynamicPage(name: "setupTempPage", title: "Temperature Setup", uninstall:true, install:true) {
     section("Temp range") {
-      paragraph "When the temperature is between the min and max values, and there is recent precipitation " +
-        "the heat tape switches will be turned on.  In Temp only mode snowfall is ignored.  Current Temp: " + getTemp() + " c."
+      paragraph "When the temperature is between the min and max values, and there is recent " +
+        "precipitation the heat tape switches will be turned on.  In Temp only mode snowfall is ignored."
       input "minTemp", "float", title: "Min Temp (c)", required: true, defaultValue: -5.0
       input "maxTemp", "float", title: "Max Temp (c)", required: true, defaultValue: 5.0
     }
     
     section("Operation Mode") {
-      paragraph "Auto tracks snowfall and melt rates.  Temp only uses only temperature range.  Force modes " +
-        "simply turn the switches always on or always off (generally for testing).  Monitor-Only does not " +
-        "control switches but monitors weather and switch state."
+      paragraph "Auto tracks snowfall and melt rates.  Temp only uses only temperature range.  Force " +
+        "modes simply turn the switches always on or always off (generally for testing).  " +
+        "Monitor-Only does not control switches but monitors weather and switch state."
       input "op_mode", "enum", title: "Mode",
         options: ["Automatic","Temperature-Only","Force-On","Force-Off","Monitor-Only"], 
         defaultValue:"Automatic"  
     }
     
-    if (state.start_snow == -1) {
-      section("Tracked snow level") {
-        paragraph "Indicate additional snow if present when first installing, in mm"
-        input "start_snow", "float", title: "Starting Snow level (in mm)", required: true, defaultValue: 0.0
+    if (state.history.size() == 0) {
+      section("Initial snow level") {
+        paragraph "Indicate additional snow if present when first installing, in mm.  Only " +
+          " available at SmartApp installation time."
+        input "start_snow", "float", title: "Starting Snow level (in mm)", required: true, 
+          defaultValue: 5.0
       }
     }
   }
@@ -116,7 +129,11 @@ def setupTempPage()
 
 
 def installed() {
+    log.debug "Installed with settings: ${settings}"
 	initialize()
+    
+    // Get a data reading on first install so we have accurate temp data for control.
+    snowBookkeeper()
 }
 
 
@@ -133,7 +150,6 @@ def initialize() {
     startSnowHack()
     heattapeController()
     runEvery1Hour(snowBookkeeper)
-    runEvery1Hour(heattapeController)
 }
 
 
@@ -176,7 +192,7 @@ def getHeattapeState() {
    } else if (units_on == 0 && units_off == 0) {
      return "N/A (no units)"
    } else if (units_on > 0) {
-     return "on "
+     return "on"
    } else {
      return "off"
    }
@@ -186,14 +202,11 @@ def getHeattapeState() {
 // about additional snowfall so this is necessary.  This function injects a "fake" historical record
 // an hour ago to represent that snow.
 def startSnowHack() {
-  if ( state.history.size() == 0 ) { 
-    def newHistory = [ts : now() - (1000 * 60), snow_mm : start_snow, temp_c : 0.0]
+  if ( state.history.size() == 0 && start_snow != 0.0) { 
+    def newHistory = [ts : 0, snow_mm : start_snow, temp_c : 0.0, power : 0.0]
   
-    // Push in new history data.  
+    // Push in new history data.
     state.history.add(0, newHistory)
-    
-    // Track that we've recorded this.
-    state.start_snow = start_snow
   }
 }
 
@@ -201,8 +214,6 @@ def startSnowHack() {
 
 // snowBookkeeper expects to be called hourly.  It probes and records relevant weather conditions.
 def snowBookkeeper() {
-  setupInitialConditions()
-  
   setupInitialConditions()
 
   def now = now()
@@ -252,6 +263,9 @@ def snowBookkeeper() {
   while (state.history.size() > state.MAX_HISTORY) {
     state.history.remove(state.MAX_HISTORY)
   }
+  
+  // Re-evalutate situation for control.
+  heattapeController()
 }
 
 
@@ -260,8 +274,7 @@ def getTemp() {
   if (state.history.size() > 0) {
     return state.history[0].temp_c.toFloat()
   } else {
-    // Indicate error with this weird value.
-    return "-999.0"
+    return "?.??"
   } 
 }
 
@@ -283,9 +296,12 @@ def getSnowDepth() {
       float mm_melt_per_degreeC_day = 1.6
     
       // Rain melts snow faster.
-      mm_melt_per_degreeC_day += ( it.rain_mm / 2 ) // Making this up. 
-    
-      // Our data is in hours, convert.  
+      mm_melt_per_degreeC_day += ( it.rain_mm / 2 ) // TODO: I made this up, do better.
+      
+      // TODO: Consider altitude.
+      // TODO: Consider solar radiation (a major source of melt when cold).
+
+      // This is a daily melt rate but we calculate in hours so convert.  
       float melt_mm = (mm_melt_per_degreeC_day / 24.0) * it.temp_c.toFloat()
       snow_depth -= melt_mm
     }
