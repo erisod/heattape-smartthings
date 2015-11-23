@@ -15,11 +15,12 @@
  *
  */
 definition(
-    name: "Heat Tape Weather Controller",
+    name: "Heat Tape Weather Control",
     namespace: "erisod",
     author: "Eric Mayers",
-    description: "Using weather data, this SmartApp controls heattape switches.  " + 
-      "Tested with Aeon Labs DSC06106-ZWUS switches.",
+    description: "Controls snow melting equipment (eg heat tape) using weather data.  Tested " +
+      "with Aeon Labs DSC06106-ZWUS switches.  Calculates snow accumulation and melt and uses " +
+      "current temperature.",
     category: "Green Living",
     iconUrl: "http://cdn.device-icons.smartthings.com/Weather/weather6-icn.png",
     iconX2Url: "http://cdn.device-icons.smartthings.com/Weather/weather6-icn@2x.png",
@@ -28,6 +29,7 @@ definition(
     appSetting "heattape"
 }
 
+// /*
 
 def setupInitialConditions(){
     // Possibly make this configurable in the future.
@@ -62,7 +64,7 @@ def setupPage()
     section("Device & Location Setup") {
       input "heattape", "capability.switch", title: "Heat tape switches", required: true, multiple: true
       input "zipcode", "text", title: "Zipcode or Wunderground weatherstation code (e.g. pws:code)", 
-        required: true
+        required: true, defaultValue: "pws:KCASOUTH41"
     }
 
     // If we have configured devices, show the current state of them.
@@ -210,6 +212,36 @@ def startSnowHack() {
   }
 }
 
+// Fetch current sun level 0.0-1.0; 1.0 being full sun. 
+def getSunLevel() {
+  // Identify sunrise and sunset where the hub is (location implied).  
+  def sunData = getSunriseAndSunset()
+  
+  def weatherMap = [ "Clear" : 0.9, 
+                     "Mostly Cloudy" : 0.3,
+                     "Mostly Sunny" : 0.8,
+                     "Partly Cloudy" : 0.4,
+                     "Partly Sunny" : 0.6,
+                     "Sunny" : 1.0,
+                     "Cloudy" : 0.1 ]
+                     
+  Map currentConditions = getWeatherFeature("conditions").current_observation
+  
+  log.debug "weather: " + currentConditions.weather
+  
+  def sunLevel = weatherMap[currentConditions.weather]
+  if (sunLevel == null)
+    sunLevel = 0.0
+
+  def nowDate = new Date(now())
+ 
+  // Is now between sunrise and sunset?
+  if ((sunData.sunrise < nowDate) && ( nowDate < sunData.sunset)) {
+    return sunLevel
+  } else {
+    return 0.0
+  }
+}
 
 
 // snowBookkeeper expects to be called hourly.  It probes and records relevant weather conditions.
@@ -217,7 +249,7 @@ def snowBookkeeper() {
   setupInitialConditions()
 
   def now = now()
-
+  
   Map currentConditions = getWeatherFeature("conditions" , zipcode)
   if (null == currentConditions.current_observation) {
     log.error "Failed to fetch weather condition data."
@@ -232,6 +264,8 @@ def snowBookkeeper() {
   def uv = currentConditions.current_observation.uv
   def wind_kph = currentConditions.current_observation.wind_kph
   
+  def sunLevel = getSunLevel()
+  
   // Pull heattape data.
   def powerValue = getHeattapePower()
   def stateValue = getHeattapeState()
@@ -243,13 +277,13 @@ def snowBookkeeper() {
     // TODO: Is snow mm equal to precip mm?  Does it matter?
     snow_amount = precip_mm.toFloat()
   } else {
-    rain_amount = precip_mm_toFloat() 
+    rain_amount = precip_mm.toFloat() 
   }
   
   // Construct history data entry.
   def newWeatherHistory = [ts : now, snow_mm : snow_amount, rain_mm : rain_amount, 
     temp_c : temp_c, solar_radiation : solar_radiation, uv : uv, wind_kph : wind_kph, 
-    state: stateValue, power: powerValue, agg_snow_mm : 0.0 ]
+    state: stateValue, power: powerValue, agg_snow_mm : 0.0, sun_level: sunLevel ]
     
   log.debug "new weather data: " + newWeatherHistory
   
@@ -286,28 +320,48 @@ def getSnowDepth() {
   state.history.each {
     // Add snow!
     if (it.snow_mm != null) {
+      // Note this represents the amount of liquid water precipitation, so snow_mm will be
+      // less than the actual depth of the snow.  TODO: Clarify variable names so this is 
+      // more clear.
       snow_depth += it.snow_mm.toFloat()
     }
     
     // Melt snow!
     if (it.temp_c > 0) {
       // Based on http://directives.sc.egov.usda.gov/OpenNonWebContent.aspx?content=17753.wba
-      // "1.6 to 6.0 mm/degree-day C".  Lets assume minimal melting (but you may adjust this!)
-      float mm_melt_per_degreeC_day = 1.6
-    
-      // Rain melts snow faster.
-      mm_melt_per_degreeC_day += ( it.rain_mm / 2 ) // TODO: I made this up, do better.
+      // Typical values are from 0.035 to 0.13 inches per degree-day
+      // 1.6 to 6.0 mm/degree-day C .. 2.74 mm/degree-day C is often used when other information.
+      float mm_melt_per_degreeC_day = 2.74
+        
+      // Rain melts snow faster.  How fast?  add melt for rain and temp.  This is kind of made up.
+      mm_melt_per_degreeC_day += (it.rain_mm * 0.1778)  // 0.1778 comes from a conversion in the usda doc.
+            
+      // Calculate heat from sun.  Made up approach.
+      mm_melt_per_degreeC_day += it.sun_level * 2.0
       
-      // TODO: Consider altitude.
-      // TODO: Consider solar radiation (a major source of melt when cold).
+      // Calculate melt increase from wind.
+      mm_melt_per_degreeC_day += it.wind_kph * 0.008
+
+      // Note: Solid/Liquid freezing point for water doesn't change substantially with altitude.
 
       // This is a daily melt rate but we calculate in hours so convert.  
       float melt_mm = (mm_melt_per_degreeC_day / 24.0) * it.temp_c.toFloat()
       snow_depth -= melt_mm
     }
+    
+    // No negative snow level.
+    // snow_depth = maxFloat(snow_depth, 0.0)
+    snow_depth = [snow_depth, 0.0].max()
   }
   
   return snow_depth
+}
+
+def maxFloat(float a, float b) {
+  if (a > b)
+    return a
+  else
+    return b
 }
 
 
@@ -336,7 +390,16 @@ def heattapeController() {
 
 // Determine if the temperature range is appropriate to turn on.
 def inTempRange() {
-  if ((getTemp() > minTemp.toFloat()) && (getTemp() < maxTemp.toFloat())) {
+
+  // Adjust temps based on sun level.
+  def sun_level = getSunLevel()
+  
+  // Number of degreesC to adjust when sun is full level.
+  def sun_adjust = 10.0
+  
+  // Reduce the mintemp allowed by up to sun_adjust degrees if it's sunny.
+  if ((getTemp() > ( minTemp.toFloat() - (sun_adjust * sun_level)) ) && 
+      (getTemp() < maxTemp.toFloat())) {
     return true
   } else {
     return false
@@ -384,3 +447,6 @@ def sendHeattapeCommand(on){
     }
   }
 }
+
+/*
+*/
