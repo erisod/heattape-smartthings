@@ -61,20 +61,15 @@ def setupPage()
 
   return dynamicPage(name: "setupPage", title: "Device Setup", nextPage:"setupTempPage", 
                      uninstall:false, install:false) {
-    section("Device & Location Setup") {
-      input "heattape", "capability.switch", title: "Heat tape switches", required: true, multiple: true
-      input "zipcode", "text", title: "Zipcode or Wunderground weatherstation code (e.g. pws:code)", 
-        required: true, defaultValue: "pws:KCASOUTH41"
-    }
-
     // If we have configured devices, show the current state of them.
     if (heattape != null) {
       section("Current Status") {
         def status = ""
         status = 
-          "Current Temp: " + getTemp() + "c\n" + 
-          "Calculated Snow Depth: " + getSnowDepth() + "mm\n" + 
-          "Heat Tape: " + getHeattapeState() + " @" + getHeattapePower() + "W\n"
+          "Temperature: ${getTemp()}°c\n" + 
+          "Condition: ${getWeather()}\n" +
+          "Calculated Snow Depth: ${getSnowDepth()}mm\n" + 
+          "Heat Tape: ${getHeattapeState()} drawing ${getHeattapePower()} watts\n"
         heattape.each {
           status += "   " + it.displayName + " : " + it.currentValue("switch") + "\n"
         }
@@ -85,19 +80,35 @@ def setupPage()
     // If we have temperature and snowfall history, display it, and tracked depth.
     if (state.history.size() > 0) {
       section("Hourly History", hidden:false, hideable:true) {
-        def history = ""
-        state.history.each {
-          log.debug "history element : " + it 
-        
-          def displayDate = new Date(it.ts).format("yyyy-MM-dd h:mm a", location.timeZone)
-          history += displayDate + " : " + it.snow_mm + "mm " + it.temp_c + "c " + it.power + "W\n"
-        }
-        paragraph history
+        paragraph getHistoryText()
       }
     }  
+    
+    // General device configuration.
+    section("Device & Location Setup") {
+      input "heattape", "capability.switch", title: "Heat tape switches", required: true, multiple: true
+      input "zipcode", "text", title: "Zipcode or Wunderground weatherstation code (e.g. pws:code)", 
+        required: true, defaultValue: "pws:KCASOUTH41"
+    }
   }
 }
 
+
+def getHistoryText()
+{
+  def history = "date snow temp weather power\n"
+  state.history.each {        
+    def date = new Date(it.ts).format("MM-dd h:mm a", location.timeZone)
+    def snow_mm = it.snow_mm!=null?it.snow_mm:"?"
+    def temp_c = it.temp_c!=null?it.temp_c:"?"
+    def weather = it.weather!=null?it.weather:"na"
+    def power = it.power!=null?it.power:"?"
+
+    history += "${date}: ${snow_mm}mm ${temp_c}°c ${weather} ${power}W\n"
+  }
+  
+  return history
+}
 
 def setupTempPage()
 {
@@ -105,8 +116,8 @@ def setupTempPage()
     section("Temp range") {
       paragraph "When the temperature is between the min and max values, and there is recent " +
         "precipitation the heat tape switches will be turned on.  In Temp only mode snowfall is ignored."
-      input "minTemp", "float", title: "Min Temp (c)", required: true, defaultValue: -5.0
-      input "maxTemp", "float", title: "Max Temp (c)", required: true, defaultValue: 5.0
+      input "minTemp", "float", title: "Min Temp (°c)", required: true, defaultValue: -5.0
+      input "maxTemp", "float", title: "Max Temp (°c)", required: true, defaultValue: 5.0
     }
     
     section("Operation Mode") {
@@ -150,7 +161,7 @@ def updated() {
 def initialize() {
     setupInitialConditions()
     startSnowHack()
-    heattapeController()
+    snowBookkeeper()
     runEvery1Hour(snowBookkeeper)
 }
 
@@ -178,9 +189,9 @@ def getHeattapeState() {
 
    if (heattape) {
      heattape.each {
-       log.debug "Unit " + it.displayName + " is " + it.currentValue("switch") +
-         " and drawing " + it.currentValue("power") + "W"
-       
+          
+       log.info "Unit ${it.displayName} is ${it.currentValue('switch')} and drawing " +
+         "${it.currentValue('power')}W"       
        if (it.currentValue("switch") == "on") {
          units_on++
        } else {
@@ -223,11 +234,11 @@ def getSunLevel() {
                      "Partly Cloudy" : 0.4,
                      "Partly Sunny" : 0.6,
                      "Sunny" : 1.0,
-                     "Cloudy" : 0.1 ]
+                     "Cloudy" : 0.1,
+                     "Snow" : 0.0,
+                     "Heavy Snow" : 0.0]
                      
   Map currentConditions = getWeatherFeature("conditions").current_observation
-  
-  log.debug "weather: " + currentConditions.weather
   
   def sunLevel = weatherMap[currentConditions.weather]
   if (sunLevel == null)
@@ -253,7 +264,7 @@ def snowBookkeeper() {
   Map currentConditions = getWeatherFeature("conditions" , zipcode)
   if (null == currentConditions.current_observation) {
     log.error "Failed to fetch weather condition data."
-    log.debug currentConditions
+    log.debug "conditions data: ${currentConditions}"
     return
   }
 
@@ -263,6 +274,7 @@ def snowBookkeeper() {
   def solar_radiation = currentConditions.current_observation.solarradiation
   def uv = currentConditions.current_observation.uv
   def wind_kph = currentConditions.current_observation.wind_kph
+  def weather = currentConditions.current_observation.weather
   
   def sunLevel = getSunLevel()
   
@@ -283,10 +295,9 @@ def snowBookkeeper() {
   // Construct history data entry.
   def newWeatherHistory = [ts : now, snow_mm : snow_amount, rain_mm : rain_amount, 
     temp_c : temp_c, solar_radiation : solar_radiation, uv : uv, wind_kph : wind_kph, 
-    state: stateValue, power: powerValue, agg_snow_mm : 0.0, sun_level: sunLevel ]
-    
-  log.debug "new weather data: " + newWeatherHistory
-  
+    state: stateValue, power: powerValue, agg_snow_mm : 0.0, sun_level: sunLevel,
+    weather: weather]
+
   // Push in new history data.
   state.history.add(0, newWeatherHistory)
   
@@ -310,6 +321,23 @@ def getTemp() {
   } else {
     return "?.??"
   } 
+}
+
+def isItSnowing() {
+  if (state.history.size() > 0) {
+    if (state.history[0].weather.contains("Snow")) {
+      return true
+    }
+  }
+  return false
+}
+
+
+def getWeather() {
+  def weather = state.history[0].weather
+  if (weather == null)
+    weather = "unknown"
+  return weather
 }
 
 
@@ -367,7 +395,7 @@ def maxFloat(float a, float b) {
 
 // Dispatch to appropriate control method based on operation mode. 
 def heattapeController() {
-  log.debug "heattapeController.  mode: " + op_mode
+  log.info "heattapeController operational mode: ${op_mode}"
 
   switch (op_mode) {
     case "Automatic":
@@ -409,9 +437,13 @@ def inTempRange() {
 
 // Automatic controller.
 def controlAuto() {
-  log.debug "getSnowDepth " + getSnowDepth()
-  log.debug "inTempRange " + inTempRange()
-  if ((getSnowDepth() > 0) && inTempRange()) {
+  // Weather data often indicates snowing but does not indicate
+  // precipitation > 0, so use the snowing indication or precipitation.
+  if (isItSnowing() && inTempRange()) {
+    log.info "Snowing and in temp range --> ON"
+    sendHeattapeCommand(true)
+  } else if ((getSnowDepth() > 0) && inTempRange()) {
+    log.info "Ground snow and in temp range --> ON"
     sendHeattapeCommand(true)
   } else {
     sendHeattapeCommand(false)
@@ -438,10 +470,10 @@ def sendHeattapeCommand(on){
   if (heattape) { 
     heattape.each {
       if (on) {
-        log.debug "Turning Heat Tape On : " + it.displayName
+        log.info "Turning Heat Tape On : ${it.displayName}"
         it.on()
       } else {
-        log.debug "Turning Heat Tape Off : " + it.displayName
+        log.info "Turning Heat Tape Off : ${it.displayName}"
         it.off()
       }
     }
