@@ -362,20 +362,19 @@ def getMaxTemp(records) {
 }
 
 def isItSnowing() {
-  if (state.history.size() > 0) {
-    if (state.history[0].weather.contains("Snow")) {
-      return true
-    }
-  }
-  return false
+  def weather = getWeather()
+  if (weather.contains("Snow"))
+    return true
+  else
+    return false
 }
 
 
 def getWeather() {
-  def weather = state.history[0].weather
-  if (weather == null)
-    weather = "unknown"
-  return weather
+  if (state.history[0].weather == null)
+    return "unknown"
+  else
+    return state.history[0].weather
 }
 
 
