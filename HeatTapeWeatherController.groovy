@@ -431,10 +431,10 @@ def getSnowDepth() {
       mm_melt_per_degreeC_day += (it.rain_mm * 0.1778)  // 0.1778 comes from a conversion in the usda doc.
             
       // Calculate heat from sun.  Made up approach.
-      mm_melt_per_degreeC_day += it.sun_level * 2.0
+      mm_melt_per_degreeC_day += it.sun_level * 3.0
       
       // Calculate melt increase from wind.
-      mm_melt_per_degreeC_day += it.wind_kph * 0.008
+      mm_melt_per_degreeC_day += it.wind_kph * 0.1
 
       // Note: Solid/Liquid freezing point for water doesn't change substantially with altitude.
 
@@ -444,10 +444,9 @@ def getSnowDepth() {
     }
     
     // No negative snow level.
-    // snow_depth = maxFloat(snow_depth, 0.0)
     snow_depth = [snow_depth, 0.0].max()
     
-    // log.debug "snow_depth so far at ${it.ts} : ${snow_depth}"
+    log.debug "snow_depth so far at ${it.ts} : ${snow_depth}"
   }
   
   return snow_depth
