@@ -382,7 +382,7 @@ def getWeather() {
 def getSnowDepth() {
   float snow_depth=0.0
   
-  state.history.each {
+  state.history.reverseEach {
     // Add snow!
     if (it.snow_mm != null) {
       // Note this represents the amount of liquid water precipitation, so snow_mm will be
