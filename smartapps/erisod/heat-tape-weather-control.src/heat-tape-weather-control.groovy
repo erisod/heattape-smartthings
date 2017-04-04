@@ -24,7 +24,7 @@ definition(
     category: "Green Living",
     iconUrl: "http://cdn.device-icons.smartthings.com/Weather/weather6-icn.png",
     iconX2Url: "http://cdn.device-icons.smartthings.com/Weather/weather6-icn@2x.png",
-    iconX3Url: "http://cdn.device-icons.smartthings.com/Weather/weather6-icn@2x.png") {
+    iconX3Url: "http://cdn.device-icons.smartthings.com/Weather/weather6-icn@3x.png") {
     appSetting "zipcode"
     appSetting "heattape"
 }
