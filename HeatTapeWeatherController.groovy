@@ -1,7 +1,7 @@
 /**
- *  Heat Tape Weather Controller v0.4
+ *  Heat Tape Weather Controller v0.4.1
  *
- *  Copyright 2015 Eric Mayers
+ *  Copyright 2015-2017 Eric Mayers
  *  This is a major re-write of erobertshaw's V2.1 Smart Heat Tape controller.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
