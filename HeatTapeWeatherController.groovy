@@ -1,5 +1,5 @@
 /**
- *  Heat Tape Weather Controller v0.4.1
+ *  Heat Tape Weather Controller v0.4.2
  *
  *  Copyright 2015-2017 Eric Mayers
  *  This is a major re-write of erobertshaw's V2.1 Smart Heat Tape controller.
@@ -240,6 +240,7 @@ def getSunLevel() {
                      "Partly Sunny" : 0.6,
                      "Sunny" : 1.0,
                      "Cloudy" : 0.1,
+		     "Light Snow" : 0.0,
                      "Snow" : 0.0,
                      "Heavy Snow" : 0.0]
                      
@@ -300,13 +301,16 @@ def snowBookkeeper() {
   
   // Sometimes the weather data indicates snow but doesn't report precipitation.
   // Check for that condition and assume some snow anyway.  The values here are
-  // complete guesses but I don't like to see snow on the ground, 'Snow' and 
-  // nothing recorded.
-  if (snow_amount == 0.0 && weather == "Snow") {
+  // based on https://skybrary.aero/bookshelf/books/943.pdf : 
+  // "Heavy snowfall intensity is defined as greater than 2.5 mm/hr equivalent 
+  // liquid water precipitation, moderate snow as 1 mm/hr to 2.5 mm/hr, and light
+  // snow as less than 1 mm/hr"
+  if (snow_amount == 0.0 && weather == "Light Snow") {
     snow_amount = 1.0
-  }
-  if (snow_amount == 0.0 && weather == "Heavy Snow") {
-    snow_amount = 2.0
+  } else if (snow_amount == 0.0 && weather == "Snow") {
+    snow_amount = 2.2
+  } else if (snow_amount == 0.0 && weather == "Heavy Snow") {
+    snow_amount = 3.0
   }
   
   // Construct history data entry.
