@@ -482,7 +482,7 @@ def inTempRange() {
     } else {
         // If we are in an On state and the temp in the last 4 hours is below
         // min (meaning there is ice we've been trying to melt) then stay on.
-        if (state.controlOn && getMinTemp(4) <= minTemp()) {
+        if (state.controlOn && getMinTemp(4) <= minTemp.toFloat()) {
             return true
         } else {
             return false
