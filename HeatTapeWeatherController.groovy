@@ -250,25 +250,22 @@ def getSunLevel() {
   // Identify sunrise and sunset where the hub is (location implied).  
   def sunData = getSunriseAndSunset()
   
-  def weatherMap = [ "Clear" : 0.9, 
-                     "Mostly Cloudy" : 0.3,
-                     "Mostly Sunny" : 0.8,
-                     "Partly Cloudy" : 0.4,
-                     "Partly Sunny" : 0.6,
-                     "Sunny" : 1.0,
-                     "Cloudy" : 0.1,
-                     "Light Snow" : 0.0,
-                     "Snow" : 0.0,
-                     "Heavy Snow" : 0.0 ]
+  // wunderground phrase glossary reference:
+  // https://serbian.wunderground.com/weather/api/d/docs?d=resources/phrase-glossary
+  def meltMap = [ "Clear" : 0.9, 
+                  "Mostly Cloudy" : 0.3,
+                  "Mostly Sunny" : 0.8,
+                  "Partly Cloudy" : 0.4,
+                  "Partly Sunny" : 0.6,
+                  "Sunny" : 1.0,
+                  "Cloudy" : 0.1,
+                  "Light Snow" : 0.0,
+                  "Snow" : 0.0,
+                  "Heavy Snow" : 0.0 ]
   
-  conditions = getWeatherFeature("conditions", zipcode)
-  if (conditions == null) {
-  	 log.error("Weather Feature 'conditions' could not be found in data.")
-     return 0.0
-  }
-  Map currentConditions = conditions.current_observation
+  Map currentConditions = getWeatherFeature("conditions").current_observation
   
-  def sunLevel = weatherMap[currentConditions.weather]
+  def sunLevel = meltMap[currentConditions.weather]
   if (sunLevel == null)
     sunLevel = 0.0
 
@@ -286,17 +283,20 @@ def getSunLevel() {
 def snowBookkeeper() {
   d("snowBookkeeper()")
   setupInitialConditions()
-
+  
+  Map currentConditions
+  
   def now = now()
   try {
-    Map currentConditions = getWeatherFeature("conditions" , zipcode)
-  } catch(e) {
-    log.debug("EXCEPTION while trying to fetch weather conditions for ${zipcode} : ${e}")
+    d("fetching conditions data for zipcode ${zipcode}")
+    currentConditions = getWeatherFeature("conditions", zipcode)
+} catch(e) {
+    log.error("EXCEPTION while trying to fetch weather conditions for ${zipcode} : ${e}")
     return
   }
-  if ((null == currentConditions) || (null == currentConditions.current_observation)) {
-    log.error "Failed to fetch weather condition data."
-    log.debug "conditions data: ${currentConditions}"
+
+  if (null == currentConditions.current_observation) {
+    log.error "currentConditions.current_observation is null"
     return
   }
 
@@ -304,20 +304,12 @@ def snowBookkeeper() {
   log.debug "condition data : ${currentConditions.current_observation}"
   log.debug "precip: ${currentConditions.current_observation.precip_1hr_metric}"
   
-  // Parsing in a try/catch as sometimes this metric is the string '--'.  argh!
-  try {
-    float precip_mm = currentConditions.current_observation.precip_1hr_metric.toFloat()
-  } catch(e) {
-    log.debug "Failed to parse precip_1hr_metric to float.  Value: ${currentConditions.current_observation.precip_1hr_metric}"
-    float precip_mm = 0.0
-  }
-  
+  float precip_mm = parseFloatZero(currentConditions.current_observation.precip_1hr_metric)  
   float temp_c = currentConditions.current_observation.temp_c.toFloat()
-  def solar_radiation = currentConditions.current_observation.solarradiation
+  def solar_radiation = parseFloatZero(currentConditions.current_observation.solarradiation)
   def uv = currentConditions.current_observation.uv
   def wind_kph = currentConditions.current_observation.wind_kph
   def weather = currentConditions.current_observation.weather
-  
   def sunLevel = getSunLevel()
   
   // Pull heattape data.
@@ -329,9 +321,9 @@ def snowBookkeeper() {
   float rain_amount = 0.0
   if (temp_c < 2) {
     // TODO: Is snow mm equal to precip mm?  Does it matter?
-    snow_amount = precip_mm.toFloat()
+    snow_amount = precip_mm
   } else {
-    rain_amount = precip_mm.toFloat() 
+    rain_amount = precip_mm 
   }
   
   // Sometimes the weather data indicates snow but doesn't report precipitation.
@@ -340,12 +332,52 @@ def snowBookkeeper() {
   // "Heavy snowfall intensity is defined as greater than 2.5 mm/hr equivalent 
   // liquid water precipitation, moderate snow as 1 mm/hr to 2.5 mm/hr, and light
   // snow as less than 1 mm/hr"
-  if (snow_amount == 0.0 && weather == "Light Snow") {
-    snow_amount = 1.0
-  } else if (snow_amount == 0.0 && weather == "Snow") {
-    snow_amount = 2.2
-  } else if (snow_amount == 0.0 && weather == "Heavy Snow") {
-    snow_amount = 3.0
+  
+  // snowMap aims to represent any Wunderground snow-y condition.
+  def snowMap = [ "Light Snow" : 1.0,
+                  "Snow" : 2.2,
+                  "Heavy Snow" : 3.0,
+                  "Light Snow Grains" : 1.0,
+                  "Snow Grains" : 2.2,
+                  "Heavy Snow Grains" : 3.0,
+                  "Light Ice Crystals" : 1.0,
+                  "Ice Crystals" : 2.2,
+                  "Heavy Ice Crystals" : 3.0,
+                  "Light Ice Pellets" : 1.0,
+                  "Ice Pellets" : 2.2,
+                  "Heavy Ice Pellets" : 3.0,
+                  "Light Hail" : 1.0,
+                  "Hail" : 2.2,
+                  "Heavy Hail" : 3.0,
+                  "Light Low Drifting Snow" : 1.0,
+                  "Low Drifting Snow" : 2.2,
+                  "Heavy Low Drifting Snow" : 3.0,
+                  "Light Blowing Snow" : 1.0,
+                  "Blowing Snow" : 2.2,
+                  "Heavy Blowing Snow" : 3.0,
+                  "Light Snow Showers" : 1.0,
+                  "Snow Showers" : 2.2,
+                  "Heavy Snow Showers" : 3.0,
+                  "Light Snow Blowing Snow Mist" : 1.0,
+                  "Snow Blowing Snow Mist" : 2.2,
+                  "Heavy Snow Blowing Snow Mist" : 3.0,
+                  "Light Ice Pellet Showers" : 1.0,
+                  "Ice Pellet Showers" : 2.2,
+                  "Heavy Ice Pellet Showers" : 3.0,
+                  "Light Thunderstorms and Snow" : 1.0,
+                  "Thunderstorms and Snow" : 2.2,
+                  "Heavy Thunderstorms and Snow" : 3.0,
+                  "Light Freezing Drizzle" : 1.0,
+                  "Freezing Drizzle" : 2.2,
+                  "Heavy Freezing Drizzle" : 3.0,
+                  "Light Freezing Rain" : 1.0,
+                  "Freezing Rain" : 2.2,
+                  "Heavy Freezing Rain" : 3.0]
+      
+  if (snow_amount == 0.0) {  
+     snow_amount = snowMap[weather]
+     if (snow_amount == null)
+       snow_amount = 0.0
   }
   
   // Construct history data entry.
@@ -485,8 +517,7 @@ def maxFloat(float a, float b) {
 
 // Dispatch to appropriate control method based on operation mode. 
 def heattapeController() {
-  log.info "heattapeController operational mode: ${op_mode}"
-  log.debug "getMinTemp (controller) says : " + getMinTemp(4)
+  log.info "heattapeController operational mode: ${op_mode}."
 
   switch (op_mode) {
     case "Automatic":
@@ -511,8 +542,6 @@ def heattapeController() {
 def inTempRange() {
   d("inTempRange()")
 
-  log.debug "getMinTemp says : " + getMinTemp(4)
-
   // Adjust temps based on sun level.  If it's otherwise too cold to turn on, 
   // but sunny (causing melt) turn on anyway.
   def sun_level = getSunLevel()
@@ -528,9 +557,10 @@ def inTempRange() {
       (getTemp() < maxTemp.toFloat())) {
     return true
   } else {
-    // If we are in an On state and the temp in the last 4 hours is below
+    // If we are in an On state and the temp in the last 2 hours is below
     // min (meaning there is ice we've been trying to melt) then stay on.
-    if (state.controlOn && getMinTemp(4) <= minTemp()) {
+    if (state.controlOn && getMinTemp(2) <= minTemp.toFloat()) {
+      info.log("Special case: Accelerated ice melting window")
       return true
     } else { 
       return false
@@ -585,8 +615,18 @@ def sendHeattapeCommand(on){
   }
 }
 
+// Attempt to parse the passed value as a float and return 0.0 on error.
+def parseFloatZero(f) {
+  try {
+    return f.toFloat()
+  } catch (e) {
+    return 0.0
+  }
+}
+
+// Debug logging helper.
 def d(msg) {
-  if (true) {
+  if (false) {
     log.debug msg
   }
 }
