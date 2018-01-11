@@ -184,12 +184,7 @@ def getHeattapePower() {
     if (heattape) {
         heattape.each {
             if (it.currentValue("power") != null) {
-                try {
-                    d("about to aggregate power")
-                    aggregate_power += it.currentValue("power").toFloat()
-                } catch (e) {
-                    log.debug("power value can't be parsed.")
-                }
+                aggregate_power += parseFloatZero(it.currentValue("power"))
             }
         }
     }
@@ -405,7 +400,7 @@ def snowBookkeeper() {
 def getTemp() {
     d("getTemp()")
     if (state.history.size() > 0) {
-        return state.history[0].temp_c.toFloat()
+        return state.history[0].temp_c
     } else {
         return "?.??"
     }
@@ -422,7 +417,7 @@ def getMinTemp(records) {
         log.debug "getting records : " + records
         log.debug "fewer history : " + state.history[0, records - 1]
         state.history[0, records - 1].each() {
-            mintemp = [it.temp_c.toFloat(), mintemp.toFloat()].min()
+            mintemp = [it.temp_c, mintemp].min()
         }
         return mintemp
     } else {
@@ -474,7 +469,7 @@ def getSnowDepth() {
             // Note this represents the amount of liquid water precipitation, so snow_mm will be
             // less than the actual depth of the snow.  TODO: Clarify variable names so this is 
             // more clear.
-            snow_depth += it.snow_mm.toFloat()
+            snow_depth += parseFloatZero(it.snow_mm)
         }
 
         // Melt snow!
@@ -496,7 +491,7 @@ def getSnowDepth() {
             // Note: Solid/Liquid freezing point for water doesn't change substantially with altitude.
 
             // This is a daily melt rate but we calculate in hours so convert.  
-            float melt_mm = (mm_melt_per_degreeC_day / 24.0) * it.temp_c.toFloat()
+            float melt_mm = (mm_melt_per_degreeC_day / 24.0) * it.temp_c
             snow_depth -= melt_mm
         }
 
@@ -550,16 +545,16 @@ def inTempRange() {
     def sun_adjust = 10.0
 
     // Reduce the mintemp allowed by up to sun_adjust degrees if it's sunny.  
-    def adjustedMinTemp = minTemp.toFloat() - (sun_adjust * sun_level)
+    def adjustedMinTemp = minTemp - (sun_adjust * sun_level)
 
     // Is the current temperate in range?
     if ((getTemp() > (adjustedMinTemp)) &&
-        (getTemp() < maxTemp.toFloat())) {
+        (getTemp() < maxTemp)) {
         return true
     } else {
         // If we are in an On state and the temp in the last 2 hours is below
         // min (meaning there is ice we've been trying to melt) then stay on.
-        if (state.controlOn && getMinTemp(2) <= minTemp.toFloat()) {
+        if (state.controlOn && getMinTemp(2) <= minTemp) {
             info.log("Special case: Accelerated ice melting window")
             return true
         } else {
@@ -626,7 +621,7 @@ def parseFloatZero(f) {
 
 // Debug logging helper.
 def d(msg) {
-    if (false) {
+    if (true) {
         log.debug msg
     }
 }
