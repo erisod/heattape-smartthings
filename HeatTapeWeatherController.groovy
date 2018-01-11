@@ -1,5 +1,5 @@
 /**
- *  Heat Tape Weather Controller v0.4.2
+ *  Heat Tape Weather Controller v0.4.3
  *
  *  Copyright 2015-2017 Eric Mayers
  *  This is a major re-write of erobertshaw's V2.1 Smart Heat Tape controller.
@@ -30,9 +30,10 @@ definition(
 }
 
 def setupInitialConditions(){
+    d("setupInitialConditions()")
     // Possibly make this configurable in the future.
     if (state.MAX_HISTORY == null) {
-      state.MAX_HISTORY = 24 * 14 // 2 weeks of hourly readings.
+      state.MAX_HISTORY = 24 * 14 // 14 days of hourly readings.
     }
 
     // History data structure.
@@ -62,6 +63,7 @@ preferences {
 
 def setupPage()
 {
+  d("setupPage()")
   setupInitialConditions()
 
   return dynamicPage(name: "setupPage", title: "Device Setup", nextPage:"setupTempPage", 
@@ -101,6 +103,7 @@ def setupPage()
 
 def getHistoryText()
 {
+  d("getHistoryText()")
   def history = "date snow temp weather power\n"
   state.history.each {        
     def date = new Date(it.ts).format("MM-dd h:mm a", location.timeZone)
@@ -117,6 +120,7 @@ def getHistoryText()
 
 def setupTempPage()
 {
+  d("setupTempPage()")
   return dynamicPage(name: "setupTempPage", title: "Temperature Setup", uninstall:true, install:true) {
     section("Temp range") {
       paragraph "When the temperature is between the min and max values, and there is recent " +
@@ -147,6 +151,7 @@ def setupTempPage()
 
 
 def installed() {
+    d("installed()")
     log.debug "Installed with settings: ${settings}"
 	initialize()
     
@@ -156,6 +161,7 @@ def installed() {
 
 
 def updated() {
+    d("updated()")
 	log.debug "Updated with settings: ${settings}"
     
 	unsubscribe()
@@ -164,6 +170,7 @@ def updated() {
 
 
 def initialize() {
+    d("initialize()")
     setupInitialConditions()
     startSnowHack()
     snowBookkeeper()
@@ -174,21 +181,29 @@ def initialize() {
 
 // Returns power (in Watts) aggregate over switches that provide this data.
 def getHeattapePower() {
+   d("getHeattapePower()")
    float aggregate_power = 0.0
 
    if (heattape) {
      heattape.each {
-       if (it.currentValue("power")) {
-         aggregate_power += it.currentValue("power").toFloat() 
+       if (it.currentValue("power") != null) {
+         try {
+           d("about to aggregate power")
+           aggregate_power += it.currentValue("power").toFloat() 
+         } catch(e) {
+           log.debug("power value can't be parsed.")
+         }
        }
      }
    }
    
+   d("getHeattapePower returning ${aggregate_power}")
    return aggregate_power
 }
 
 // Describe heat tape state.  Returns "off", "on", or "mixed".
 def getHeattapeState() {
+   d("getHeattapeState()")
    def units_on = 0
    def units_off = 0
 
@@ -220,6 +235,7 @@ def getHeattapeState() {
 // about additional snowfall so this is necessary.  This function injects a "fake" historical record
 // an hour ago to represent that snow.
 def startSnowHack() {
+  d("startSnowHack()")
   if ( state.history.size() == 0 && start_snow != 0.0) { 
     def newHistory = [ts : 0, snow_mm : start_snow, temp_c : 0.0, power : 0.0, weather: "unknown"]
   
@@ -230,6 +246,7 @@ def startSnowHack() {
 
 // Fetch current sun level 0.0-1.0; 1.0 being full sun. 
 def getSunLevel() {
+  d("getSunLevel()")
   // Identify sunrise and sunset where the hub is (location implied).  
   def sunData = getSunriseAndSunset()
   
@@ -240,11 +257,16 @@ def getSunLevel() {
                      "Partly Sunny" : 0.6,
                      "Sunny" : 1.0,
                      "Cloudy" : 0.1,
-		     "Light Snow" : 0.0,
+                     "Light Snow" : 0.0,
                      "Snow" : 0.0,
-                     "Heavy Snow" : 0.0]
-                     
-  Map currentConditions = getWeatherFeature("conditions").current_observation
+                     "Heavy Snow" : 0.0 ]
+  
+  conditions = getWeatherFeature("conditions", zipcode)
+  if (conditions == null) {
+  	 log.error("Weather Feature 'conditions' could not be found in data.")
+     return 0.0
+  }
+  Map currentConditions = conditions.current_observation
   
   def sunLevel = weatherMap[currentConditions.weather]
   if (sunLevel == null)
@@ -262,12 +284,17 @@ def getSunLevel() {
 
 // snowBookkeeper expects to be called hourly.  It probes and records relevant weather conditions.
 def snowBookkeeper() {
+  d("snowBookkeeper()")
   setupInitialConditions()
 
   def now = now()
-  
-  Map currentConditions = getWeatherFeature("conditions" , zipcode)
-  if (null == currentConditions.current_observation) {
+  try {
+    Map currentConditions = getWeatherFeature("conditions" , zipcode)
+  } catch(e) {
+    log.debug("EXCEPTION while trying to fetch weather conditions for ${zipcode} : ${e}")
+    return
+  }
+  if ((null == currentConditions) || (null == currentConditions.current_observation)) {
     log.error "Failed to fetch weather condition data."
     log.debug "conditions data: ${currentConditions}"
     return
@@ -276,7 +303,15 @@ def snowBookkeeper() {
   // Pull weather data.
   log.debug "condition data : ${currentConditions.current_observation}"
   log.debug "precip: ${currentConditions.current_observation.precip_1hr_metric}"
-  float precip_mm = currentConditions.current_observation.precip_1hr_metric.toFloat()
+  
+  // Parsing in a try/catch as sometimes this metric is the string '--'.  argh!
+  try {
+    float precip_mm = currentConditions.current_observation.precip_1hr_metric.toFloat()
+  } catch(e) {
+    log.debug "Failed to parse precip_1hr_metric to float.  Value: ${currentConditions.current_observation.precip_1hr_metric}"
+    float precip_mm = 0.0
+  }
+  
   float temp_c = currentConditions.current_observation.temp_c.toFloat()
   def solar_radiation = currentConditions.current_observation.solarradiation
   def uv = currentConditions.current_observation.uv
@@ -336,6 +371,7 @@ def snowBookkeeper() {
 
 // Return current weather temperature based on most recent reading from history data.
 def getTemp() {
+  d("getTemp()")
   if (state.history.size() > 0) {
     return state.history[0].temp_c.toFloat()
   } else {
@@ -345,6 +381,7 @@ def getTemp() {
 
 // Return minimum temperature in the last n recorded slots.
 def getMinTemp(records) {
+  d("getMinTemp()")
   def mintemp = 999
   log.debug "In getMinTemp"
   if (state.history.size() > 0) {
@@ -363,6 +400,7 @@ def getMinTemp(records) {
 
 // Return maximum temperature in the last n recorded slots.
 def getMaxTemp(records) {
+  d("getMaxTemp()")
   if (state.history.size() > 0) {
     records = max(records, state.history.size())
     return state.history[0..records].max()
@@ -372,6 +410,7 @@ def getMaxTemp(records) {
 }
 
 def isItSnowing() {
+  d("isItSnowing()")
   def weather = getWeather()
   if (weather.contains("Snow"))
     return true
@@ -380,14 +419,21 @@ def isItSnowing() {
 }
 
 def getWeather() {
-  if (state.history[0].weather == null)
+  d("getWeather()")
+  if (state.history[0]) {
+    if (state.history[0].weather == null)
+      return "unknown"
+    else
+      return state.history[0].weather
+  } else {
+    log.debug("null state.history[0] !!")
     return "unknown"
-  else
-    return state.history[0].weather
+  }
 }
 
 // Calculate accumulated depth of snow based on data history.
 def getSnowDepth() {
+  d("getSnowDepth()")
   float snow_depth=0.0
   
   state.history.reverseEach {
@@ -463,6 +509,7 @@ def heattapeController() {
 
 // Determine if the temperature range is appropriate to turn on.
 def inTempRange() {
+  d("inTempRange()")
 
   log.debug "getMinTemp says : " + getMinTemp(4)
 
@@ -517,6 +564,7 @@ def controlTempOnly() {
 
 // Control for the heat tape switches.  True = on; False = off. 
 def sendHeattapeCommand(on){
+  d("sendHeattapeCommand ${on}")
   // We could track current state and only make a change if necessary, however
   // with unreliability of wireless signals I prefer to have it re-command each
   // hour.
@@ -534,5 +582,11 @@ def sendHeattapeCommand(on){
         it.off()
       }
     }
+  }
+}
+
+def d(msg) {
+  if (true) {
+    log.debug msg
   }
 }
