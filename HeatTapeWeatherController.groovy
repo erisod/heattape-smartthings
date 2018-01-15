@@ -1,5 +1,5 @@
 /**
- *  Heat Tape Weather Controller v0.4.3
+ *  Heat Tape Weather Controller v0.4.4
  *
  *  Copyright 2015-2017 Eric Mayers
  *  This is a major re-write of erobertshaw's V2.1 Smart Heat Tape controller.
@@ -52,13 +52,18 @@ def setupInitialConditions() {
     }
 }
 
-
 preferences {
     page(name: "setupPage")
     page(name: "setupTempPage")
     page(name: "listInfoPage")
 }
 
+def historyExists() {
+    if (state.history.size() > 0)
+    	return true
+    else
+    	return false
+}
 
 def setupPage() {
     setupInitialConditions()
@@ -71,12 +76,15 @@ def setupPage() {
                 def status = ""
                 status =
                     "Current Temp: ${getTemp()}°c\n" +
-                    "Condition: ${getWeather()}\n" +
+                    "Current Condition: ${getWeather()}\n" +
                     "Calculated Snow Depth: ${getSnowDepth()}mm\n" +
+                    "App Mode: ${op_mode}\n" +
                     "Heat Tape: ${getHeattapeState()} drawing ${getHeattapePower()} watts\n"
                 heattape.each {
                     status += "   " + it.displayName + " : " + it.currentValue("switch") + "\n"
                 }
+                // Remove last line feed.
+                status = status[0..-2]
                 paragraph status
             }
         }
@@ -97,17 +105,25 @@ def setupPage() {
     }
 }
 
-
 def getHistoryText() {
-    def history = "date snow temp weather power\n"
+    def history = ""
+    def lastDate = ""
     state.history.each {
-        def date = new Date(it.ts).format("MM-dd h:mm a", location.timeZone)
+        def newDate = new Date(it.ts).format("MM-dd", location.timeZone)
+        if (newDate != lastDate && it.ts != 0) {
+        	history += "${newDate}     Snowfall Temp Power Condition\n"
+            lastDate = newDate
+        }
+        def time = new Date(it.ts).format("k:mm", location.timeZone)
         def snow_mm = it.snow_mm != null ? it.snow_mm : "?"
         def temp_c = it.temp_c != null ? it.temp_c : "?"
         def weather = it.weather != null ? it.weather : "na"
         def power = it.power != null ? it.power : "?"
 
-        history += "${date}: ${snow_mm}mm ${temp_c}°c ${weather} ${power}W\n"
+        if (it.ts == 0)
+            history += "Initial setup with ${snow_mm}mm of ground snow"
+		else
+            history += "@${time} ${snow_mm}mm ${temp_c}°c ${power}w ${weather}\n"
     }
 
     return history
@@ -127,7 +143,7 @@ def setupTempPage() {
                 "modes simply turn the switches always on or always off (generally for testing).  " +
                 "Monitor-Only does not control switches but monitors weather and switch state."
             input "op_mode", "enum", title: "Mode",
-                options: ["Automatic", "Temperature-Only", "Force-On", "Force-Off", "Monitor-Only"],
+                options: ["Automatic", "TemperatureOnly", "ForceOn", "ForceOff", "Monitor"],
                 defaultValue: "Automatic"
         }
 
@@ -142,7 +158,6 @@ def setupTempPage() {
     }
 }
 
-
 def installed() {
     log.debug "Installed with settings: ${settings}"
     initialize()
@@ -151,7 +166,6 @@ def installed() {
     snowBookkeeper()
 }
 
-
 def updated() {
     log.debug "Updated with settings: ${settings}"
 
@@ -159,15 +173,15 @@ def updated() {
     initialize()
 }
 
-
 def initialize() {
+    log.debug "initialize()"
+
     setupInitialConditions()
-    startSnowHack()
-    snowBookkeeper()
-    runEvery1Hour(snowBookkeeper)
+	startSnowHack()
+	snowBookkeeper()
+	runEvery1Hour(snowBookkeeper)
     runEvery15Minutes(heattapeController)
 }
-
 
 // Returns power (in Watts) aggregate over switches that provide this data.
 def getHeattapePower() {
@@ -191,9 +205,6 @@ def getHeattapeState() {
 
     if (heattape) {
         heattape.each {
-
-            log.info "Unit ${it.displayName} is ${it.currentValue('switch')} and drawing " +
-                "${it.currentValue('power')}W"
             if (it.currentValue("switch") == "on") {
                 units_on++
             } else {
@@ -218,7 +229,7 @@ def getHeattapeState() {
 // an hour ago to represent that snow.
 def startSnowHack() {
     if (state.history.size() == 0 && start_snow != 0.0) {
-        def newHistory = [ts: 0, snow_mm: start_snow, temp_c: 0.0, power: 0.0, weather: "unknown"]
+        def newHistory = [ts: 0, snow_mm: start_snow, temp_c: 0.0, power: 0.0, weather: "initial setup"]
 
         // Push in new history data.
         state.history.add(0, newHistory)
@@ -263,7 +274,19 @@ def snowBookkeeper() {
     setupInitialConditions()
 
     def now = now()
-
+    
+    // Check if we already have a very recent history entry.  At startup snowBookkeeper() is
+    // sometimes called a few times resulting in duplicate entries.
+    if (state.history.size() > 0) {
+        def age_ms = now - state.history[0].ts
+        log.info "History data is ${age_ms}ms old"
+        if (age_ms < 60 * 1000) {
+            // One minute
+            log.info "Skipping data collection."
+            return
+        }
+    }
+    
     Map currentConditions = getWeatherFeature("conditions", zipcode)
     if (null == currentConditions.current_observation) {
         log.error "Failed to fetch weather condition data."
@@ -273,7 +296,7 @@ def snowBookkeeper() {
 
     // Pull weather data.
     log.debug "condition data : ${currentConditions.current_observation}"
-    log.debug "precip: ${currentConditions.current_observation.precip_1hr_metric}"
+    // log.debug "precip: ${currentConditions.current_observation.precip_1hr_metric}"
     float precip_mm = currentConditions.current_observation.precip_1hr_metric.toFloat()
     float temp_c = currentConditions.current_observation.temp_c.toFloat()
     def solar_radiation = currentConditions.current_observation.solarradiation
@@ -288,13 +311,13 @@ def snowBookkeeper() {
     def stateValue = getHeattapeState()
 
     // Make a guess at the amount of snow that has fallen, also track rain.
-    float snow_amount = 0.0
-    float rain_amount = 0.0
+    float snow_mm = 0.0
+    float rain_mm = 0.0
     if (temp_c < 2) {
         // TODO: Is snow mm equal to precip mm?  Does it matter?
-        snow_amount = precip_mm.toFloat()
+        snow_mm = precip_mm.toFloat()
     } else {
-        rain_amount = precip_mm.toFloat()
+        rain_mm = precip_mm.toFloat()
     }
 
     // Sometimes the weather data indicates snow but doesn't report precipitation.
@@ -303,16 +326,24 @@ def snowBookkeeper() {
     // "Heavy snowfall intensity is defined as greater than 2.5 mm/hr equivalent 
     // liquid water precipitation, moderate snow as 1 mm/hr to 2.5 mm/hr, and light
     // snow as less than 1 mm/hr"
-    if (snow_amount == 0.0 && weather == "Light Snow") {
-        snow_amount = 1.0
-    } else if (snow_amount == 0.0 && weather == "Snow") {
-        snow_amount = 2.2
-    } else if (snow_amount == 0.0 && weather == "Heavy Snow") {
-        snow_amount = 3.0
+    if (snow_mm == 0.0 && weather == "Light Snow") {
+        snow_mm = 1.0
+    } else if (snow_mm == 0.0 && weather == "Snow") {
+        snow_mm = 2.2
+    } else if (snow_mm == 0.0 && weather == "Heavy Snow") {
+        snow_mm = 3.0
+    }
+
+    if (weather == null || snow_mm == null || temp_c == null) {
+    	log.error "Critical field is null.  Not adding data to history.  Something is wrong with fetch or parsing."
+        log.error "weather : ${weather}"
+        log.error "snow_mm : ${snow_mm}"
+        log.error "temp_c  : ${temp_c}"
+        return
     }
 
     // Construct history data entry.
-    def newWeatherHistory = [ts: now, snow_mm: snow_amount, rain_mm: rain_amount,
+    def newWeatherHistory = [ts: now, snow_mm: snow_mm, rain_mm: rain_mm,
         temp_c: temp_c, solar_radiation: solar_radiation, uv: uv, wind_kph: wind_kph,
         state: stateValue, power: powerValue, agg_snow_mm: 0.0, sun_level: sunLevel,
         weather: weather
@@ -335,36 +366,30 @@ def snowBookkeeper() {
 
 // Return current weather temperature based on most recent reading from history data.
 def getTemp() {
-    if (state.history.size() > 0) {
-        return state.history[0].temp_c.toFloat()
+	if (! historyExists()) {
+        log.debug "getTemp called with no history data.  This should never happen.  Returning 100.0c"
+    	return 100.0
     } else {
-        return "?.??"
+        return state.history[0].temp_c.toFloat()
     }
 }
 
 // Return minimum temperature in the last n recorded slots.
 def getMinTemp(records) {
     def mintemp = 999
-    log.debug "In getMinTemp"
+    // log.debug "getMinTemp(${records}) called."
     if (state.history.size() > 0) {
         records = [records, state.history.size()].min()
 
-        log.debug "getting records : " + records
-        log.debug "fewer history : " + state.history[0, records - 1]
+        // log.debug "getting records : " + records
+        // log.debug "fewer history : " + state.history[0, records - 1]
         state.history[0, records - 1].each() {
-            mintemp = [it.temp_c.toFloat(), mintemp.toFloat()].min()
+        	// Ignore ts=0 records (initial snow).
+        	if (it.ts != 0) {
+                mintemp = [it.temp_c.toFloat(), mintemp.toFloat()].min()
+            }
         }
         return mintemp
-    } else {
-        return null
-    }
-}
-
-// Return maximum temperature in the last n recorded slots.
-def getMaxTemp(records) {
-    if (state.history.size() > 0) {
-        records = max(records, state.history.size())
-        return state.history[0..records].max()
     } else {
         return null
     }
@@ -379,14 +404,20 @@ def isItSnowing() {
 }
 
 def getWeather() {
-    if (state.history[0].weather == null)
-        return "unknown"
+    if (! historyExists())
+    	return "no-data"
+    else if (state.history[0].weather == null)
+        return "unknown (null weather field in history)"
     else
         return state.history[0].weather
 }
 
 // Calculate accumulated depth of snow based on data history.
 def getSnowDepth() {
+	// No history means no snow.
+	if (! historyExists())
+    	return 0.0
+
     float snow_depth = 0.0
 
     state.history.reverseEach {
@@ -426,7 +457,7 @@ def getSnowDepth() {
         snow_depth = [snow_depth, 0.0].max()
     }
 
-    return snow_depth
+    return snow_depth.round(3)
 }
 
 def maxFloat(float a, float b) {
@@ -439,22 +470,33 @@ def maxFloat(float a, float b) {
 // Dispatch to appropriate control method based on operation mode. 
 def heattapeController() {
     log.info "heattapeController operational mode: ${op_mode}"
-    log.debug "getMinTemp (controller) says : " + getMinTemp(4)
+    log.info "4 hour minTemp: " + getMinTemp(4)
+    if (heattape) {
+        heattape.each {
+            log.info "Unit ${it.displayName} is ${it.currentValue('switch')} and drawing ${it.currentValue('power')}W"
+ 		}
+    }
 
+    // Note : Double case (string and int) is a work-around for a bug in the simulator.
     switch (op_mode) {
         case "Automatic":
+        case 1:
             controlAuto()
             break
-        case "Temperature-Only":
+        case "TemperatureOnly":
+        case 2:
             controlTempOnly()
             break
-        case "Force-On":
-            sendHeattapeCommand(1)
+        case "ForceOn":
+        case 3:
+            sendHeattapeCommand(true)
             break
-        case "Force-Off":
-            sendHeattapeCommand(0)
+        case "ForceOff":
+        case 4:
+            sendHeattapeCommand(false)
             break
-        case "Monitor-Only":
+        case "Monitor":
+        case 5:
             // Do nothing.
             break
     }
@@ -462,27 +504,28 @@ def heattapeController() {
 
 // Determine if the temperature range is appropriate to turn on.
 def inTempRange() {
-
-    log.debug "getMinTemp says : " + getMinTemp(4)
-
+	if (! historyExists()) {
+    	return false
+    }
+    
     // Adjust temps based on sun level.  If it's otherwise too cold to turn on, 
     // but sunny (causing melt) turn on anyway.
     def sun_level = getSunLevel()
 
     // Number of degreesC to adjust when sun is full level.
-    def sun_adjust = 10.0
+    def sun_adjust = 5.0
 
     // Reduce the mintemp allowed by up to sun_adjust degrees if it's sunny.  
     def adjustedMinTemp = minTemp.toFloat() - (sun_adjust * sun_level)
 
     // Is the current temperate in range?
-    if ((getTemp() > (adjustedMinTemp)) &&
+    if ((getTemp() > adjustedMinTemp) &&
         (getTemp() < maxTemp.toFloat())) {
         return true
     } else {
-        // If we are in an On state and the temp in the last 4 hours is below
+        // If we are in an On state and the temp in the last 2 hours is below
         // min (meaning there is ice we've been trying to melt) then stay on.
-        if (state.controlOn && getMinTemp(4) <= minTemp.toFloat()) {
+        if (state.controlOn && getMinTemp(2) <= minTemp.toFloat()) {
             return true
         } else {
             return false
@@ -501,7 +544,8 @@ def controlAuto() {
         log.info "Ground snow and in temp range --> ON"
         sendHeattapeCommand(true)
     } else {
-        sendHeattapeCommand(false)
+        log.info "No ground snow or falling snow or out of temp range --> OFF"
+		sendHeattapeCommand(false)
     }
 }
 
@@ -522,14 +566,16 @@ def sendHeattapeCommand(on) {
 
     // Record current state.
     state.controlOn = on
+    
+    log.debug "sendHeattapeCommand called with request  on:${on}"
 
     if (heattape) {
         heattape.each {
             if (on) {
-                log.info "Turning Heat Tape On : ${it.displayName}"
+                log.info "Turning ON unit : ${it.displayName}"
                 it.on()
             } else {
-                log.info "Turning Heat Tape Off : ${it.displayName}"
+                log.info "Turning OFF unit : ${it.displayName}"
                 it.off()
             }
         }
