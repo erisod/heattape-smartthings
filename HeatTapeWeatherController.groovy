@@ -450,6 +450,9 @@ def getSnowDepth() {
             // This is a daily melt rate but we calculate in hours so convert.  
             float melt_mm = (mm_melt_per_degreeC_day / 24.0) * it.temp_c.toFloat()
             snow_depth -= melt_mm
+		
+	     // Log melted snow.
+	     log.info "Calculated snow melt : ${melt_mm}mm"
         }
 
         // No negative snow level.
